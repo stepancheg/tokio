@@ -4,7 +4,7 @@ mod atomic_stack;
 use self::atomic_stack::AtomicStack;
 
 mod entry;
-use self::entry::Entry;
+pub(super) use self::entry::Entry;
 
 mod handle;
 pub(crate) use self::handle::Handle;

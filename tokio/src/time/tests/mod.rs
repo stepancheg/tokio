@@ -1,4 +1,3 @@
-mod mock_clock;
 mod test_delay;
 
 use crate::time::{self, Instant};
