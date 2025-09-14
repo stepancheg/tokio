@@ -1,7 +1,7 @@
 #![cfg(feature = "full")]
 #![cfg(unix)]
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt, Interest};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt, Interest};
 use tokio::net::unix::pipe;
 use tokio_test::task;
 use tokio_test::{assert_err, assert_ok, assert_pending, assert_ready_ok};
@@ -11,6 +11,9 @@ use std::io;
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
+use std::process::Stdio;
+use tokio::process::Command;
 
 /// Helper struct which will clean up temporary files once dropped.
 struct TempFifo {
@@ -543,4 +546,56 @@ async fn anon_pipe_into_blocking_fd() -> std::io::Result<()> {
     assert!(!is_nonblocking(&rx_fd)?);
 
     Ok(())
+}
+
+async fn test_handing_pipe_impl(use_pipe: bool) {
+    let mut command = Command::new("sh");
+    command.args(["-c", "exec sleep 10000000000"]);
+
+    command.stdin(Stdio::null());
+    command.stderr(Stdio::inherit());
+
+    let (mut child, mut stdout_rx): (_, Pin<Box<dyn AsyncRead>>) = if use_pipe {
+        // Hangs with tokio::net::unix::pipe.
+        let (stdout_tx, stdout_rx) = pipe::pipe().unwrap();
+        command.stdout(stdout_tx.into_blocking_fd().unwrap());
+        let child = command.spawn().unwrap();
+        (child, Box::pin(stdout_rx))
+    } else {
+        // Works with a regular stdout pipe.
+        command.stdout(Stdio::piped());
+        let mut child = command.spawn().unwrap();
+        let stdout_rx = child.stdout.take().unwrap();
+        (child, Box::pin(stdout_rx))
+    };
+
+    let mut stdout = Vec::new();
+    let stdout_fut = stdout_rx.read_to_end(&mut stdout);
+
+    eprintln!("Sending SIGKILL");
+    child.start_kill().unwrap();
+
+    // To be safe.
+    child.stdout.take();
+    child.stderr.take();
+    child.stdin.take();
+
+    eprintln!("Calling wait");
+    child.wait().await.unwrap();
+    eprintln!("Child waited; waiting for stdout");
+
+    stdout_fut.await.unwrap();
+
+    eprintln!("All good; this code is unreachable with tokio::net::unix::pipe");
+}
+
+#[tokio::test]
+#[ignore]
+async fn unix_pipe_hangs_after_terminate() {
+    test_handing_pipe_impl(true).await
+}
+
+#[tokio::test]
+async fn unix_pipe_does_not_hang_after_terminate_with_std() {
+    test_handing_pipe_impl(false).await
 }
